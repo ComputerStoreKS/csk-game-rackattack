@@ -1,0 +1,754 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Rack Attack | CSK Games | Computer Store Kansas</title>
+  <meta name="description" content="Rack Attack — avoid the servers at all cost in this addictive arcade game from Computer Store Kansas!" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Exo+2:wght@400;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:      #05090f;
+      --blue:    #0366d6;
+      --cyan:    #00d4ff;
+      --green:   #10b981;
+      --orange:  #ff6b35;
+      --gray:    #6b8caa;
+      --panel:   #0d1a2e;
+      --border:  #1a3a5c;
+      --white:   #ffffff;
+    }
+
+    html, body {
+      width: 100%; height: 100%;
+      overflow: hidden;
+      background: var(--bg);
+      font-family: 'Exo 2', sans-serif;
+      touch-action: none;
+      user-select: none;
+    }
+
+    #wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      gap: 0.5rem;
+      padding: 0.5rem;
+    }
+
+    /* ── HEADER ── */
+    #hdr {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+      max-width: 420px;
+    }
+
+    .logo {
+      font-family: 'Orbitron', sans-serif;
+      font-weight: 900;
+      font-size: clamp(0.9rem, 3.5vw, 1.2rem);
+      color: var(--white);
+      letter-spacing: 0.05em;
+      text-shadow: 0 0 16px rgba(0,212,255,0.5);
+    }
+    .logo span { color: var(--cyan); }
+
+    .score-wrap {
+      display: flex;
+      gap: 0.6rem;
+    }
+
+    .score-box {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.25rem 0.7rem;
+      text-align: center;
+    }
+    .score-box .lbl {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.45rem;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: var(--gray);
+    }
+    .score-box .val {
+      font-family: 'Orbitron', sans-serif;
+      font-weight: 700;
+      font-size: clamp(0.85rem, 3vw, 1.1rem);
+      color: var(--cyan);
+      line-height: 1;
+    }
+    #best-val { color: var(--green); }
+
+    /* ── CANVAS ── */
+    #canvas {
+      display: block;
+      border: 2px solid var(--border);
+      border-radius: 10px;
+      box-shadow: 0 0 30px rgba(3,102,214,0.15), inset 0 0 40px rgba(0,0,0,0.4);
+      max-width: 100%;
+      cursor: pointer;
+    }
+
+    #hint {
+      font-family: 'Orbitron', sans-serif;
+      font-size: clamp(0.55rem, 2vw, 0.7rem);
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--gray);
+      opacity: 0.7;
+    }
+  </style>
+</head>
+<body>
+<div id="wrap">
+  <div id="hdr">
+    <div class="logo">Rack <span>Attack</span></div>
+    <div class="score-wrap">
+      <div class="score-box">
+        <div class="lbl">Score</div>
+        <div class="val" id="score-val">0</div>
+      </div>
+      <div class="score-box">
+        <div class="lbl">Best</div>
+        <div class="val" id="best-val">0</div>
+      </div>
+    </div>
+  </div>
+
+  <canvas id="canvas"></canvas>
+  <div id="hint">Space / Tap to flap</div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════
+//  RACK ATTACK — Game Engine
+// ═══════════════════════════════════════════
+
+const canvas = document.getElementById('canvas');
+const ctx    = canvas.getContext('2d');
+
+// ── SIZING ──────────────────────────────────
+const W = 360, H = 560; // internal resolution
+canvas.width  = W;
+canvas.height = H;
+
+// Scale canvas to fit screen while keeping aspect ratio
+function resize() {
+  const wrap    = document.getElementById('wrap');
+  const hdrH    = document.getElementById('hdr').offsetHeight;
+  const hintH   = document.getElementById('hint').offsetHeight;
+  const pad     = 32;
+  const maxH    = window.innerHeight - hdrH - hintH - pad;
+  const maxW    = Math.min(wrap.offsetWidth, 420);
+  const scale   = Math.min(maxW / W, maxH / H);
+  canvas.style.width  = Math.floor(W * scale) + 'px';
+  canvas.style.height = Math.floor(H * scale) + 'px';
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ── CONSTANTS ───────────────────────────────
+const GRAVITY      = 0.22;   // much gentler fall
+const JUMP_VEL     = -5.6;   // softer but still snappy flap
+const PIPE_W       = 52;
+const PIPE_GAP     = 175;    // generous gap — clearly passable
+const PIPE_SPEED   = 2.0;    // slightly slower
+const PIPE_SPACING = 220;    // fixed pixel distance between pipe starts
+const CHIP_SIZE    = 28;
+const CHIP_X       = 80;
+const GROUND_H     = 48;
+
+// ── STATE ───────────────────────────────────
+let state   = 'idle';   // idle | playing | dead
+let score   = 0;
+let best    = parseInt(localStorage.getItem('rack-attack-best') || '0');
+let vy      = 0;
+let chipY   = H / 2 - CHIP_SIZE / 2;
+let angle   = 0;
+let pipes   = [];
+let stars   = [];
+let bits    = [];       // explosion particles
+let frameN  = 0;
+let flashT  = 0;
+let groundX = 0;
+
+// Score display elements
+const scoreEl = document.getElementById('score-val');
+const bestEl  = document.getElementById('best-val');
+bestEl.textContent = best;
+
+// ── STARS ────────────────────────────────────
+for (let i = 0; i < 55; i++) {
+  stars.push({
+    x: Math.random() * W,
+    y: Math.random() * (H - GROUND_H),
+    r: Math.random() * 1.4 + 0.3,
+    speed: Math.random() * 0.3 + 0.05,
+    alpha: Math.random() * 0.6 + 0.2,
+  });
+}
+
+// ── INPUT ────────────────────────────────────
+function flap() {
+  if (state === 'idle') {
+    state = 'playing';
+    spawnPipe(W + 80); // first pipe starts a comfortable distance away
+  }
+  if (state === 'dead') return;
+  vy = JUMP_VEL;
+  spawnFlapBits();
+}
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space' || e.code === 'ArrowUp') { e.preventDefault(); flap(); }
+});
+canvas.addEventListener('pointerdown', e => { e.preventDefault(); flap(); });
+
+// ── PIPES ────────────────────────────────────
+function spawnPipe(startX) {
+  const minTop = 70;
+  const maxTop = H - GROUND_H - PIPE_GAP - 70;
+  const topH   = Math.floor(Math.random() * (maxTop - minTop) + minTop);
+  pipes.push({ x: startX ?? W + PIPE_W, topH, scored: false });
+}
+
+// ── PARTICLES ────────────────────────────────
+function spawnFlapBits() {
+  for (let i = 0; i < 4; i++) {
+    bits.push({
+      x: CHIP_X - CHIP_SIZE / 2,
+      y: chipY + CHIP_SIZE / 2,
+      vx: -1 - Math.random() * 2,
+      vy: (Math.random() - 0.5) * 2.5,
+      life: 1,
+      type: 'flap',
+      color: `hsl(${190 + Math.random()*30},100%,60%)`,
+      size: 2 + Math.random() * 2,
+    });
+  }
+}
+
+function spawnDeathBits() {
+  for (let i = 0; i < 20; i++) {
+    const angle = (i / 20) * Math.PI * 2;
+    const speed = 2 + Math.random() * 4;
+    bits.push({
+      x: CHIP_X,
+      y: chipY + CHIP_SIZE / 2,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: 1,
+      type: 'death',
+      color: ['#ff6b35','#00d4ff','#f59e0b','#10b981','#ffffff'][Math.floor(Math.random()*5)],
+      size: 3 + Math.random() * 4,
+    });
+  }
+}
+
+// ── COLLISION ────────────────────────────────
+function checkCollision() {
+  const pad = 3;
+  const cx  = CHIP_X - CHIP_SIZE / 2 + pad;
+  const cy  = chipY + pad;
+  const cw  = CHIP_SIZE - pad * 2;
+  const ch  = CHIP_SIZE - pad * 2;
+
+  // Ground / ceiling
+  if (chipY + CHIP_SIZE >= H - GROUND_H || chipY <= 0) return true;
+
+  // Pipes
+  for (const p of pipes) {
+    if (cx + cw > p.x + 4 && cx < p.x + PIPE_W - 4) {
+      if (cy < p.topH || cy + ch > p.topH + PIPE_GAP) return true;
+    }
+  }
+  return false;
+}
+
+// ── UPDATE ───────────────────────────────────
+function update() {
+  frameN++;
+
+  // Scroll ground always
+  groundX = (groundX - (state === 'playing' ? PIPE_SPEED : 0.5)) % 40;
+
+  // Scroll stars
+  for (const s of stars) {
+    if (state === 'playing') s.x -= s.speed * (PIPE_SPEED / 2);
+    if (s.x < 0) s.x = W;
+  }
+
+  if (state === 'idle') {
+    // Gentle hover
+    chipY = H / 2 - CHIP_SIZE / 2 + Math.sin(frameN * 0.04) * 8;
+    angle = 0;
+    return;
+  }
+
+  if (state === 'playing') {
+    vy    += GRAVITY;
+    chipY += vy;
+    angle  = Math.max(-20, Math.min(70, vy * 5));
+
+    // Pipes
+    for (const p of pipes) {
+      p.x -= PIPE_SPEED;
+      if (!p.scored && p.x + PIPE_W < CHIP_X) {
+        p.scored = true;
+        score++;
+        scoreEl.textContent = score;
+        if (score > best) { best = score; bestEl.textContent = best; localStorage.setItem('rack-attack-best', best); }
+      }
+    }
+
+    // Remove off-screen pipes
+    pipes = pipes.filter(p => p.x + PIPE_W > -10);
+
+    // Spawn next pipe when the last one has moved PIPE_SPACING px from spawn point
+    if (pipes.length === 0 ||
+        pipes[pipes.length - 1].x <= W + PIPE_W - PIPE_SPACING) {
+      spawnPipe();
+    }
+
+    // Collision
+    if (checkCollision()) {
+      state  = 'dead';
+      flashT = 8;
+      spawnDeathBits();
+    }
+  }
+
+  // Particles
+  for (const b of bits) {
+    b.x    += b.vx;
+    b.y    += b.vy;
+    b.vy   += 0.15;
+    b.life -= b.type === 'flap' ? 0.07 : 0.03;
+  }
+  bits = bits.filter(b => b.life > 0);
+
+  if (flashT > 0) flashT--;
+}
+
+// ── DRAW HELPERS ─────────────────────────────
+
+function drawStars() {
+  for (const s of stars) {
+    ctx.save();
+    ctx.globalAlpha = s.alpha * (0.7 + 0.3 * Math.sin(frameN * 0.02 + s.x));
+    ctx.fillStyle = '#c8dff0';
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+function drawGrid() {
+  ctx.save();
+  ctx.strokeStyle = 'rgba(3,102,214,0.07)';
+  ctx.lineWidth = 1;
+  const gs = 32;
+  for (let x = 0; x < W; x += gs) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H - GROUND_H); ctx.stroke(); }
+  for (let y = 0; y < H - GROUND_H; y += gs) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+  ctx.restore();
+}
+
+// CPU Chip drawing
+function drawChip(x, y, size, alpha) {
+  ctx.save();
+  ctx.globalAlpha = alpha ?? 1;
+  ctx.translate(x, y + size / 2);
+  ctx.rotate(angle * Math.PI / 180);
+  ctx.translate(-x, -(y + size / 2));
+
+  const cx = x - size / 2, cy = y, s = size;
+  const pinLen = s * 0.22, pinW = 1.8, pinSpacing = s * 0.28;
+  const pinColor = '#ff6b35';
+
+  // Glow
+  const grd = ctx.createRadialGradient(cx + s/2, cy + s/2, 0, cx + s/2, cy + s/2, s * 0.8);
+  grd.addColorStop(0, 'rgba(255,107,53,0.25)');
+  grd.addColorStop(1, 'rgba(255,107,53,0)');
+  ctx.fillStyle = grd;
+  ctx.fillRect(cx - s*0.4, cy - s*0.4, s*1.8, s*1.8);
+
+  // Body
+  ctx.fillStyle = '#1a1a2e';
+  ctx.strokeStyle = pinColor;
+  ctx.lineWidth = 1.5;
+  roundRect(ctx, cx, cy, s, s, 4);
+  ctx.fill(); ctx.stroke();
+
+  // Die (inner square)
+  ctx.fillStyle = 'rgba(255,107,53,0.55)';
+  ctx.strokeStyle = pinColor;
+  ctx.lineWidth = 1;
+  roundRect(ctx, cx + s*0.22, cy + s*0.22, s*0.56, s*0.56, 2);
+  ctx.fill(); ctx.stroke();
+
+  // Grid lines on die
+  ctx.strokeStyle = 'rgba(255,107,53,0.8)';
+  ctx.lineWidth = 0.7;
+  const d1 = cx + s*0.22, d2 = cy + s*0.22, ds = s*0.56;
+  for (let i = 1; i < 3; i++) {
+    ctx.beginPath(); ctx.moveTo(d1 + ds/3*i, d2); ctx.lineTo(d1 + ds/3*i, d2+ds); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(d1, d2 + ds/3*i); ctx.lineTo(d1+ds, d2 + ds/3*i); ctx.stroke();
+  }
+
+  // Pins
+  ctx.strokeStyle = pinColor;
+  ctx.lineWidth   = pinW;
+  ctx.lineCap     = 'round';
+  const offsets = [-pinSpacing, 0, pinSpacing];
+  for (const o of offsets) {
+    // Top
+    ctx.beginPath(); ctx.moveTo(cx + s/2 + o, cy); ctx.lineTo(cx + s/2 + o, cy - pinLen); ctx.stroke();
+    // Bottom
+    ctx.beginPath(); ctx.moveTo(cx + s/2 + o, cy + s); ctx.lineTo(cx + s/2 + o, cy + s + pinLen); ctx.stroke();
+    // Left
+    ctx.beginPath(); ctx.moveTo(cx, cy + s/2 + o); ctx.lineTo(cx - pinLen, cy + s/2 + o); ctx.stroke();
+    // Right
+    ctx.beginPath(); ctx.moveTo(cx + s, cy + s/2 + o); ctx.lineTo(cx + s + pinLen, cy + s/2 + o); ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+// Server rack pipe drawing
+function drawPipe(x, topH) {
+  const botY  = topH + PIPE_GAP;
+  const botH  = H - GROUND_H - botY;
+  drawRack(x, 0, PIPE_W, topH, true);
+  drawRack(x, botY, PIPE_W, botH, false);
+
+  // Gap edge lights
+  ctx.save();
+  ctx.strokeStyle = 'rgba(0,212,255,0.6)';
+  ctx.lineWidth   = 2;
+  ctx.shadowColor = '#00d4ff';
+  ctx.shadowBlur  = 8;
+  // Top pipe bottom edge
+  ctx.beginPath(); ctx.moveTo(x - 3, topH); ctx.lineTo(x + PIPE_W + 3, topH); ctx.stroke();
+  // Bottom pipe top edge
+  ctx.beginPath(); ctx.moveTo(x - 3, botY); ctx.lineTo(x + PIPE_W + 3, botY); ctx.stroke();
+  ctx.restore();
+}
+
+function drawRack(x, y, w, h, flipped) {
+  if (h <= 0) return;
+  ctx.save();
+
+  // Main body
+  const grad = ctx.createLinearGradient(x, y, x + w, y);
+  grad.addColorStop(0,   '#0d1a2e');
+  grad.addColorStop(0.3, '#112240');
+  grad.addColorStop(1,   '#0a1520');
+  ctx.fillStyle = grad;
+  ctx.fillRect(x, y, w, h);
+
+  // Border
+  ctx.strokeStyle = '#1a3a5c';
+  ctx.lineWidth   = 1.5;
+  ctx.strokeRect(x, y, w, h);
+
+  // Rack unit lines + LED dots
+  const unitH = 14;
+  const startY = flipped ? y + h - unitH : y;
+  const dir    = flipped ? -1 : 1;
+  let uy = startY;
+  let row = 0;
+  while (flipped ? uy > y : uy < y + h) {
+    if (uy >= y && uy + unitH <= y + h) {
+      // Unit separator line
+      ctx.strokeStyle = 'rgba(26,58,92,0.8)';
+      ctx.lineWidth   = 0.8;
+      ctx.beginPath();
+      ctx.moveTo(x, uy);
+      ctx.lineTo(x + w, uy);
+      ctx.stroke();
+
+      // Unit body — server face
+      ctx.fillStyle = 'rgba(255,255,255,0.02)';
+      ctx.fillRect(x + 2, uy + 1, w - 4, unitH - 2);
+
+      // Blinking LED
+      const ledColors = ['#10b981','#10b981','#10b981','#f59e0b','#ff6b35'];
+      const on = (frameN + row * 17) % 60 < (row % 3 === 0 ? 55 : 48);
+      ctx.fillStyle = on ? ledColors[row % ledColors.length] : '#1a3a5c';
+      ctx.shadowColor = ctx.fillStyle;
+      ctx.shadowBlur  = on ? 6 : 0;
+      ctx.beginPath();
+      ctx.arc(x + w - 8, uy + unitH / 2, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+
+      // Drive bay lines
+      ctx.strokeStyle = 'rgba(26,58,92,0.6)';
+      ctx.lineWidth   = 0.6;
+      for (let d = 0; d < 3; d++) {
+        ctx.beginPath();
+        ctx.moveTo(x + 4 + d * 7, uy + 3);
+        ctx.lineTo(x + 4 + d * 7, uy + unitH - 3);
+        ctx.stroke();
+      }
+    }
+    uy += dir * unitH;
+    row++;
+  }
+
+  // Side cable tray
+  ctx.fillStyle = 'rgba(0,212,255,0.06)';
+  ctx.fillRect(x, y, 5, h);
+  ctx.strokeStyle = 'rgba(0,212,255,0.2)';
+  ctx.lineWidth   = 1;
+  ctx.strokeRect(x, y, 5, h);
+
+  ctx.restore();
+}
+
+function drawGround() {
+  // Ground plate
+  const grad = ctx.createLinearGradient(0, H - GROUND_H, 0, H);
+  grad.addColorStop(0, '#0d1a2e');
+  grad.addColorStop(1, '#05090f');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, H - GROUND_H, W, GROUND_H);
+
+  // Top border glow
+  ctx.save();
+  ctx.strokeStyle = 'rgba(0,212,255,0.5)';
+  ctx.lineWidth   = 1.5;
+  ctx.shadowColor = '#00d4ff';
+  ctx.shadowBlur  = 8;
+  ctx.beginPath();
+  ctx.moveTo(0, H - GROUND_H);
+  ctx.lineTo(W, H - GROUND_H);
+  ctx.stroke();
+  ctx.restore();
+
+  // Scrolling floor tiles
+  ctx.save();
+  ctx.strokeStyle = 'rgba(3,102,214,0.25)';
+  ctx.lineWidth   = 1;
+  for (let x = groundX; x < W; x += 40) {
+    ctx.beginPath(); ctx.moveTo(x, H - GROUND_H); ctx.lineTo(x, H); ctx.stroke();
+  }
+  for (let y = H - GROUND_H; y < H; y += 16) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+  ctx.restore();
+
+  // CSK label
+  ctx.save();
+  ctx.font         = 'bold 9px Orbitron, monospace';
+  ctx.fillStyle    = 'rgba(107,140,170,0.5)';
+  ctx.textAlign    = 'center';
+  ctx.letterSpacing = '0.15em';
+  ctx.fillText('COMPUTER STORE KANSAS · TOPEKA KS', W / 2, H - 10);
+  ctx.restore();
+}
+
+function drawBits() {
+  for (const b of bits) {
+    ctx.save();
+    ctx.globalAlpha = b.life;
+    ctx.fillStyle   = b.color;
+    ctx.shadowColor = b.color;
+    ctx.shadowBlur  = 6;
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.size * b.life, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+// ── OVERLAY SCREENS ──────────────────────────
+function drawIdle() {
+  // Title
+  ctx.save();
+  ctx.textAlign    = 'center';
+  ctx.font         = 'bold 28px Orbitron, monospace';
+  ctx.fillStyle    = '#ffffff';
+  ctx.shadowColor  = '#00d4ff';
+  ctx.shadowBlur   = 20;
+  ctx.fillText('RACK ATTACK', W / 2, H / 2 - 70);
+  ctx.shadowBlur   = 0;
+
+  ctx.font      = '600 11px Exo 2, sans-serif';
+  ctx.fillStyle = 'rgba(107,140,170,0.9)';
+  wrapText(ctx, 'Avoid the servers at all cost', W / 2, H / 2 - 46, W - 60, 17);
+
+  // Pulsing tap prompt
+  const pulse = 0.6 + 0.4 * Math.sin(frameN * 0.08);
+  ctx.globalAlpha = pulse;
+  ctx.font        = 'bold 13px Orbitron, monospace';
+  ctx.fillStyle   = '#00d4ff';
+  ctx.shadowColor = '#00d4ff';
+  ctx.shadowBlur  = 12;
+  ctx.fillText('TAP / SPACE TO START', W / 2, H / 2 + 80);
+  ctx.restore();
+}
+
+function drawDead() {
+  // Semi overlay
+  ctx.save();
+  ctx.fillStyle    = 'rgba(5,9,15,0.65)';
+  ctx.fillRect(0, 0, W, H - GROUND_H);
+
+  ctx.textAlign    = 'center';
+  ctx.font         = 'bold 30px Orbitron, monospace';
+  ctx.fillStyle    = '#ec4899';
+  ctx.shadowColor  = '#ec4899';
+  ctx.shadowBlur   = 20;
+  ctx.fillText('GAME OVER', W / 2, H / 2 - 60);
+  ctx.shadowBlur   = 0;
+
+  ctx.font         = 'bold 44px Orbitron, monospace';
+  ctx.fillStyle    = '#00d4ff';
+  ctx.shadowColor  = '#00d4ff';
+  ctx.shadowBlur   = 16;
+  ctx.fillText(score, W / 2, H / 2 - 8);
+  ctx.shadowBlur   = 0;
+
+  if (score === best && score > 0) {
+    ctx.font      = 'bold 11px Orbitron, monospace';
+    ctx.fillStyle = '#10b981';
+    ctx.shadowColor = '#10b981';
+    ctx.shadowBlur  = 10;
+    ctx.fillText('NEW BEST!', W / 2, H / 2 + 22);
+    ctx.shadowBlur  = 0;
+  }
+
+  const pulse = 0.55 + 0.45 * Math.sin(frameN * 0.1);
+  ctx.globalAlpha  = pulse;
+  ctx.font         = 'bold 12px Orbitron, monospace';
+  ctx.fillStyle    = '#ffffff';
+  ctx.shadowColor  = '#ffffff';
+  ctx.shadowBlur   = 8;
+  ctx.fillText('TAP / SPACE TO RETRY', W / 2, H / 2 + 60);
+  ctx.restore();
+}
+
+// ── FLASH ────────────────────────────────────
+function drawFlash() {
+  if (flashT <= 0) return;
+  ctx.save();
+  ctx.globalAlpha = (flashT / 8) * 0.6;
+  ctx.fillStyle   = '#ffffff';
+  ctx.fillRect(0, 0, W, H);
+  ctx.restore();
+}
+
+// ── SCORE IN-GAME ────────────────────────────
+function drawScore() {
+  if (state !== 'playing') return;
+  ctx.save();
+  ctx.textAlign   = 'center';
+  ctx.font        = 'bold 36px Orbitron, monospace';
+  ctx.fillStyle   = 'rgba(255,255,255,0.85)';
+  ctx.shadowColor = 'rgba(0,0,0,0.6)';
+  ctx.shadowBlur  = 8;
+  ctx.fillText(score, W / 2, 52);
+  ctx.restore();
+}
+
+// ── RESET ────────────────────────────────────
+function reset() {
+  score  = 0;
+  vy     = 0;
+  chipY  = H / 2 - CHIP_SIZE / 2;
+  angle  = 0;
+  pipes  = [];
+  bits   = [];
+  frameN = 0;
+  flashT = 0;
+  scoreEl.textContent = 0;
+  state  = 'idle';
+}
+
+// Handle retry click after death
+canvas.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  if (state === 'dead') { reset(); }
+});
+document.addEventListener('keydown', e => {
+  if ((e.code === 'Space' || e.code === 'ArrowUp') && state === 'dead') { reset(); }
+});
+
+// ── MAIN LOOP ────────────────────────────────
+function loop() {
+  update();
+
+  // Background
+  ctx.fillStyle = '#05090f';
+  ctx.fillRect(0, 0, W, H);
+  drawGrid();
+  drawStars();
+
+  // Pipes
+  for (const p of pipes) drawPipe(p.x, p.topH);
+
+  drawGround();
+
+  // Chip (hide on death after flash)
+  if (state !== 'dead' || flashT > 0 || bits.length > 0) {
+    const chipAlpha = state === 'dead' && flashT === 0 ? Math.max(0, bits.length / 20) : 1;
+    drawChip(CHIP_X, chipY, CHIP_SIZE, chipAlpha);
+  }
+
+  drawBits();
+  drawFlash();
+  drawScore();
+
+  if (state === 'idle') drawIdle();
+  if (state === 'dead' && flashT === 0) drawDead();
+
+  requestAnimationFrame(loop);
+}
+
+// Utility: rounded rect path
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+// Utility: word-wrap text centered on cx, starting at y, max width maxW, line height lineH
+function wrapText(ctx, text, cx, y, maxW, lineH) {
+  const words = text.split(' ');
+  let line = '';
+  for (let i = 0; i < words.length; i++) {
+    const test = line + (line ? ' ' : '') + words[i];
+    if (ctx.measureText(test).width > maxW && line) {
+      ctx.fillText(line, cx, y);
+      line = words[i];
+      y += lineH;
+    } else {
+      line = test;
+    }
+  }
+  if (line) ctx.fillText(line, cx, y);
+}
+
+loop();
+</script>
+</body>
+</html>
