@@ -157,11 +157,22 @@ resize();
 window.addEventListener('resize', resize);
 
 // ── CONSTANTS ───────────────────────────────
-const GRAVITY      = 0.22;   // much gentler fall
-const JUMP_VEL     = -5.6;   // softer but still snappy flap
+const BASE_GRAVITY    = 0.38;
+const BASE_JUMP_VEL   = -7.5;
+const BASE_PIPE_SPEED = 4.2;
+// JUMP_VEL and GRAVITY are dynamic — see getSpeed() below
 const PIPE_W       = 52;
 const PIPE_GAP     = 175;    // generous gap — clearly passable
-const PIPE_SPEED   = 2.0;    // slightly slower
+// PIPE_SPEED is dynamic — see getSpeed() below
+
+// Returns current speed multiplier based on score
+function getSpeed() {
+  // +0.08 per point, capped at 2.5x base speed
+  return Math.min(1 + Math.min(score, 100) * 0.015, 2.0);
+}
+function pipeSpeed()  { return BASE_PIPE_SPEED * getSpeed(); }
+function gravity()    { return BASE_GRAVITY    * getSpeed(); }
+function jumpVel()    { return BASE_JUMP_VEL   * Math.sqrt(getSpeed()); }
 const PIPE_SPACING = 220;    // fixed pixel distance between pipe starts
 const CHIP_SIZE    = 28;
 const CHIP_X       = 80;
@@ -201,10 +212,12 @@ for (let i = 0; i < 55; i++) {
 function flap() {
   if (state === 'idle') {
     state = 'playing';
+    lastTs = null;
+    accumulator = 0;
     spawnPipe(W + 80); // first pipe starts a comfortable distance away
   }
   if (state === 'dead') return;
-  vy = JUMP_VEL;
+  vy = jumpVel();
   spawnFlapBits();
 }
 
@@ -279,29 +292,29 @@ function update() {
   frameN++;
 
   // Scroll ground always
-  groundX = (groundX - (state === 'playing' ? PIPE_SPEED : 0.5)) % 40;
+  groundX = (groundX - (state === 'playing' ? pipeSpeed() : 0.5)) % 40;
 
   // Scroll stars
   for (const s of stars) {
-    if (state === 'playing') s.x -= s.speed * (PIPE_SPEED / 2);
+    if (state === 'playing') s.x -= s.speed * (pipeSpeed() / 2);
     if (s.x < 0) s.x = W;
   }
 
   if (state === 'idle') {
-    // Gentle hover
+    // Gentle hover - use real time not frameN so it's smooth at any fps
     chipY = H / 2 - CHIP_SIZE / 2 + Math.sin(frameN * 0.04) * 8;
     angle = 0;
     return;
   }
 
   if (state === 'playing') {
-    vy    += GRAVITY;
+    vy    += gravity();
     chipY += vy;
     angle  = Math.max(-20, Math.min(70, vy * 5));
 
     // Pipes
     for (const p of pipes) {
-      p.x -= PIPE_SPEED;
+      p.x -= pipeSpeed();
       if (!p.scored && p.x + PIPE_W < CHIP_X) {
         p.scored = true;
         score++;
@@ -336,7 +349,7 @@ function update() {
   }
   bits = bits.filter(b => b.life > 0);
 
-  if (flashT > 0) flashT--;
+  if (flashT > 0) { flashT--; if (flashT < 0) flashT = 0; }
 }
 
 // ── DRAW HELPERS ─────────────────────────────
@@ -365,6 +378,7 @@ function drawGrid() {
 
 // CPU Chip drawing
 function drawChip(x, y, size, alpha) {
+  if (!isFinite(x) || !isFinite(y) || !isFinite(size) || size <= 0) return;
   ctx.save();
   ctx.globalAlpha = alpha ?? 1;
   ctx.translate(x, y + size / 2);
@@ -659,6 +673,16 @@ function drawScore() {
   ctx.shadowColor = 'rgba(0,0,0,0.6)';
   ctx.shadowBlur  = 8;
   ctx.fillText(score, W / 2, 52);
+
+  // Speed level indicator
+  const spd = getSpeed();
+  if (spd > 1.05) {
+    ctx.font      = 'bold 11px Orbitron, monospace';
+    ctx.fillStyle = spd > 2.0 ? '#ff2d2d' : spd > 1.5 ? '#ff6b35' : '#00d4ff';
+    ctx.shadowColor = ctx.fillStyle;
+    ctx.shadowBlur  = 8;
+    ctx.fillText('SPEED x' + spd.toFixed(1), W / 2, 70);
+  }
   ctx.restore();
 }
 
@@ -672,6 +696,8 @@ function reset() {
   bits   = [];
   frameN = 0;
   flashT = 0;
+  lastTs = null;
+  accumulator = 0;
   scoreEl.textContent = 0;
   state  = 'idle';
 }
@@ -686,8 +712,38 @@ document.addEventListener('keydown', e => {
 });
 
 // ── MAIN LOOP ────────────────────────────────
-function loop() {
-  update();
+// Fixed timestep: update() always runs at 60fps-equivalent ticks.
+// On a 30fps phone it runs update() twice per frame instead of once.
+// This keeps physics/speed identical regardless of device framerate.
+// Game runs update() once per frame always.
+// On mobile (30fps) we run multiple updates per frame to compensate.
+// Target: 60 updates/sec. At 144fps we run 1 update/frame (144fps feel).
+// At 30fps we run 2 updates/frame to maintain 60fps-equivalent speed.
+const TARGET_FPS = 60;
+const MS_PER_UPDATE = 1000 / TARGET_FPS;
+let lastTs = null;
+let accumulator = 0;
+let fpsFrames = 0, fpsLast = 0, fpsDisplay = 0, lastDt = 1;
+function loop(ts) {
+  if (!ts || lastTs === null) { lastTs = ts || 0; requestAnimationFrame(loop); return; }
+  const elapsed = ts - lastTs;
+  lastTs = ts;
+  if (!elapsed || elapsed <= 0 || elapsed > 500) { requestAnimationFrame(loop); return; }
+
+  lastDt = elapsed / MS_PER_UPDATE;
+  fpsFrames++;
+  if (ts - fpsLast >= 1000) { fpsDisplay = fpsFrames; fpsFrames = 0; fpsLast = ts; }
+
+  // Always run at least once. On slow devices run extra ticks to catch up.
+  // On fast devices (144fps) just run once — preserving the snappy original feel.
+  accumulator += elapsed;
+  const maxTicks = Math.max(1, Math.round(elapsed / MS_PER_UPDATE));
+  let ticks = 0;
+  while (accumulator >= MS_PER_UPDATE && ticks < maxTicks) {
+    update();
+    accumulator -= MS_PER_UPDATE;
+    ticks++;
+  }
 
   // Background
   ctx.fillStyle = '#05090f';
@@ -702,7 +758,7 @@ function loop() {
 
   // Chip (hide on death after flash)
   if (state !== 'dead' || flashT > 0 || bits.length > 0) {
-    const chipAlpha = state === 'dead' && flashT === 0 ? Math.max(0, bits.length / 20) : 1;
+    const chipAlpha = state === 'dead' && flashT <= 0 ? Math.max(0, bits.length / 20) : 1;
     drawChip(CHIP_X, chipY, CHIP_SIZE, chipAlpha);
   }
 
@@ -711,7 +767,7 @@ function loop() {
   drawScore();
 
   if (state === 'idle') drawIdle();
-  if (state === 'dead' && flashT === 0) drawDead();
+  if (state === 'dead' && flashT <= 0) drawDead();
 
   requestAnimationFrame(loop);
 }
